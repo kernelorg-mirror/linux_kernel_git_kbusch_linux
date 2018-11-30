@@ -739,6 +739,8 @@ static bool nbd_clear_req(struct request *req, void *data, bool reserved)
 {
 	struct nbd_cmd *cmd = blk_mq_rq_to_pdu(req);
 
+	if (blk_mq_rq_state(req) != MQ_RQ_IN_FLIGHT)
+		return true;
 	cmd->status = BLK_STS_IOERR;
 	blk_mq_complete_request(req);
 	return true;

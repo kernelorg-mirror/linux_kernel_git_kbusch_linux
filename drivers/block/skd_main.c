@@ -387,6 +387,8 @@ static bool skd_inc_in_flight(struct request *rq, void *data, bool reserved)
 {
 	int *count = data;
 
+	if (blk_mq_rq_state(rq) != MQ_RQ_IN_FLIGHT)
+		return true;
 	count++;
 	return true;
 }
@@ -1899,6 +1901,8 @@ static bool skd_recover_request(struct request *req, void *data, bool reserved)
 	struct skd_device *const skdev = data;
 	struct skd_request_context *skreq = blk_mq_rq_to_pdu(req);
 
+	if (blk_mq_rq_state(req) != MQ_RQ_IN_FLIGHT)
+		return true;
 	if (skreq->state != SKD_REQ_STATE_BUSY)
 		return true;
 

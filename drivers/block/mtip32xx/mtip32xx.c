@@ -2690,6 +2690,8 @@ static bool mtip_abort_cmd(struct request *req, void *data, bool reserved)
 	struct mtip_cmd *cmd = blk_mq_rq_to_pdu(req);
 	struct driver_data *dd = data;
 
+	if (blk_mq_rq_state(req) != MQ_RQ_IN_FLIGHT)
+		return true;
 	dbg_printk(MTIP_DRV_NAME " Aborting request, tag = %d\n", req->tag);
 
 	clear_bit(req->tag, dd->port->cmds_to_issue);
@@ -2702,6 +2704,8 @@ static bool mtip_queue_cmd(struct request *req, void *data, bool reserved)
 {
 	struct driver_data *dd = data;
 
+	if (blk_mq_rq_state(req) != MQ_RQ_IN_FLIGHT)
+		return true;
 	set_bit(req->tag, dd->port->cmds_to_issue);
 	blk_abort_request(req);
 	return true;
@@ -3852,6 +3856,8 @@ static bool mtip_no_dev_cleanup(struct request *rq, void *data, bool reserv)
 {
 	struct mtip_cmd *cmd = blk_mq_rq_to_pdu(rq);
 
+	if (blk_mq_rq_state(rq) != MQ_RQ_IN_FLIGHT)
+		return true;
 	cmd->status = BLK_STS_IOERR;
 	blk_mq_complete_request(rq);
 	return true;
