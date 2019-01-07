@@ -94,6 +94,13 @@ static void nvme_put_subsystem(struct nvme_subsystem *subsys);
 static void nvme_remove_invalid_namespaces(struct nvme_ctrl *ctrl,
 					   unsigned nsid);
 
+static bool nvme_fail_request(struct blk_mq_hw_ctx *hctx, struct request *req,
+			      void *data, bool reserved)
+{
+	blk_mq_end_request(req, BLK_STS_IOERR);
+	return true;
+}
+
 static void nvme_set_queue_dying(struct nvme_ns *ns)
 {
 	/*
@@ -104,8 +111,7 @@ static void nvme_set_queue_dying(struct nvme_ns *ns)
 		return;
 	revalidate_disk(ns->disk);
 	blk_set_queue_dying(ns->queue);
-	/* Forcibly unquiesce queues to avoid blocking dispatch */
-	blk_mq_unquiesce_queue(ns->queue);
+	blk_mq_queue_tag_busy_iter(ns->queue, nvme_fail_request, NULL);
 }
 
 static void nvme_queue_scan(struct nvme_ctrl *ctrl)
