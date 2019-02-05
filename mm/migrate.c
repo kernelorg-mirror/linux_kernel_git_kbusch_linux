@@ -995,6 +995,7 @@ static int move_to_new_page(struct page *newpage, struct page *page,
 
 	}
 out:
+	trace_mm_migrate_move_page(page, newpage, rc);
 	return rc;
 }
 
