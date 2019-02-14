@@ -103,6 +103,7 @@ static const struct attribute_group *node_access_node_groups[] = {
 };
 
 static int node_migration[MAX_NUMNODES] = {[0 ...  MAX_NUMNODES - 1] = NUMA_NO_NODE};
+static int node_promotion[MAX_NUMNODES] = {[0 ...  MAX_NUMNODES - 1] = NUMA_NO_NODE};
 static DEFINE_SPINLOCK(node_migration_lock);
 
 static void node_remove_accesses(struct node *node)
@@ -541,6 +542,13 @@ static ssize_t migration_path_show(struct device *dev,
 	return sprintf(buf, "%d\n", node_migration[dev->id]);
 }
 
+static ssize_t promotion_path_show(struct device *dev,
+				   struct device_attribute *attr,
+				   char *buf)
+{
+	return sprintf(buf, "%d\n", node_promotion[dev->id]);
+}
+
 static ssize_t migration_path_store(struct device *dev,
 				    struct device_attribute *attr,
 				    const char *buf, size_t count)
@@ -579,11 +587,13 @@ static ssize_t migration_path_store(struct device *dev,
 		}
 	}
 	WRITE_ONCE(node_migration[nid], next);
+	WRITE_ONCE(node_promotion[next], nid);
 	spin_unlock(&node_migration_lock);
 
 	return count;
 }
 static DEVICE_ATTR_RW(migration_path);
+static DEVICE_ATTR_RO(promotion_path);
 
 /**
  * next_demotion_node() - Get the next node in the demotion path
@@ -602,6 +612,15 @@ int next_demotion_node(int current_node)
 	return NUMA_NO_NODE;
 }
 
+int next_promotion_node(int current_node)
+{
+	int nid = READ_ONCE(node_promotion[current_node]);
+
+	if (nid >= 0 && node_online(nid))
+		return nid;
+	return NUMA_NO_NODE;
+}
+
 static struct attribute *node_dev_attrs[] = {
 	&dev_attr_cpumap.attr,
 	&dev_attr_cpulist.attr,
@@ -610,6 +629,7 @@ static struct attribute *node_dev_attrs[] = {
 	&dev_attr_distance.attr,
 	&dev_attr_vmstat.attr,
 	&dev_attr_migration_path.attr,
+	&dev_attr_promotion_path.attr,
 	NULL
 };
 ATTRIBUTE_GROUPS(node_dev);
