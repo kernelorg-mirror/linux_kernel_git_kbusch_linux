@@ -524,13 +524,30 @@ static inline void nvme_write_sq_db(struct nvme_queue *nvmeq)
  * @cmd: The command to send
  * @write_sq: whether to write to the SQ doorbell
  */
+static inline void __nvme_submit_cmd(struct nvme_queue *nvmeq,
+				     struct nvme_command *cmd)
+{
+	memcpy(&nvmeq->sq_cmds[nvmeq->sq_tail], cmd, sizeof(*cmd));
+	if (++nvmeq->sq_tail == nvmeq->q_depth)
+		nvmeq->sq_tail = 0;
+}
+
 static void nvme_submit_cmd(struct nvme_queue *nvmeq, struct nvme_command *cmd,
 			    bool write_sq)
 {
 	spin_lock(&nvmeq->sq_lock);
-	memcpy(&nvmeq->sq_cmds[nvmeq->sq_tail], cmd, sizeof(*cmd));
-	if (++nvmeq->sq_tail == nvmeq->q_depth)
-		nvmeq->sq_tail = 0;
+	__nvme_submit_cmd(nvmeq, cmd);
+	if (write_sq)
+		writel(nvmeq->sq_tail, nvmeq->q_db);
+	spin_unlock(&nvmeq->sq_lock);
+}
+
+static inline void nvme_shadow_submit_cmd(struct nvme_queue *nvmeq,
+					  struct nvme_command *cmd,
+					  bool write_sq)
+{
+	spin_lock(&nvmeq->sq_lock);
+	__nvme_submit_cmd(nvmeq, cmd);
 	if (write_sq)
 		nvme_write_sq_db(nvmeq);
 	spin_unlock(&nvmeq->sq_lock);
@@ -895,17 +912,15 @@ static void nvme_unmap_data(struct nvme_dev *dev, struct request *req)
 /*
  * NOTE: ns is NULL when called on the admin queue.
  */
-static blk_status_t nvme_queue_rq(struct blk_mq_hw_ctx *hctx,
-			 const struct blk_mq_queue_data *bd)
+static inline blk_status_t __nvme_queue_rq(struct nvme_command *cmnd,
+					   struct nvme_queue *nvmeq,
+					   struct request *req,
+					   struct nvme_ns *ns)
 {
-	struct nvme_ns *ns = hctx->queue->queuedata;
-	struct nvme_queue *nvmeq = hctx->driver_data;
 	struct nvme_dev *dev = nvmeq->dev;
-	struct request *req = bd->rq;
-	struct nvme_command cmnd;
 	blk_status_t ret;
 
-	ret = nvme_setup_cmd(ns, req, &cmnd);
+	ret = nvme_setup_cmd(ns, req, cmnd);
 	if (ret)
 		return ret;
 
@@ -914,18 +929,43 @@ static blk_status_t nvme_queue_rq(struct blk_mq_hw_ctx *hctx,
 		goto out_free_cmd;
 
 	if (blk_rq_nr_phys_segments(req)) {
-		ret = nvme_map_data(dev, req, &cmnd);
+		ret = nvme_map_data(dev, req, cmnd);
 		if (ret)
 			goto out_cleanup_iod;
 	}
 
 	blk_mq_start_request(req);
-	nvme_submit_cmd(nvmeq, &cmnd, bd->last);
 	return BLK_STS_OK;
 out_cleanup_iod:
 	nvme_free_iod(dev, req);
 out_free_cmd:
 	nvme_cleanup_cmd(req);
+	return ret;
+}
+
+static blk_status_t nvme_queue_rq(struct blk_mq_hw_ctx *hctx,
+			 const struct blk_mq_queue_data *bd)
+{
+	struct nvme_queue *nvmeq = hctx->driver_data;
+	struct nvme_command cmnd;
+	blk_status_t ret;
+
+	ret = __nvme_queue_rq(&cmnd, nvmeq, bd->rq, hctx->queue->queuedata);
+	if (ret == BLK_STS_OK)
+		nvme_submit_cmd(nvmeq, &cmnd, bd->last);
+	return ret;
+}
+
+static blk_status_t nvme_shadow_queue_rq(struct blk_mq_hw_ctx *hctx,
+			 const struct blk_mq_queue_data *bd)
+{
+	struct nvme_queue *nvmeq = hctx->driver_data;
+	struct nvme_command cmnd;
+	blk_status_t ret;
+
+	ret = __nvme_queue_rq(&cmnd, nvmeq, bd->rq, hctx->queue->queuedata);
+	if (ret == BLK_STS_OK)
+		nvme_shadow_submit_cmd(nvmeq, &cmnd, bd->last);
 	return ret;
 }
 
@@ -1014,15 +1054,12 @@ static inline int nvme_process_cq(struct nvme_queue *nvmeq, u16 *start,
 	}
 	*end = nvmeq->cq_head;
 
-	if (*start != *end)
-		nvme_ring_cq_doorbell(nvmeq);
 	return found;
 }
 
 static irqreturn_t nvme_irq(int irq, void *data)
 {
 	struct nvme_queue *nvmeq = data;
-	irqreturn_t ret = IRQ_NONE;
 	u16 start, end;
 
 	/*
@@ -1030,7 +1067,8 @@ static irqreturn_t nvme_irq(int irq, void *data)
 	 * the irq handler, even if that was on another CPU.
 	 */
 	rmb();
-	nvme_process_cq(nvmeq, &start, &end);
+	if (nvme_process_cq(nvmeq, &start, &end))
+		writel(nvmeq->cq_head, nvmeq->q_db + nvmeq->dev->db_stride);
 	wmb();
 
 	if (start != end) {
@@ -1038,9 +1076,30 @@ static irqreturn_t nvme_irq(int irq, void *data)
 		return IRQ_HANDLED;
 	}
 
-	return ret;
+	return IRQ_NONE;
 }
 
+static irqreturn_t nvme_shadow_irq(int irq, void *data)
+{
+	struct nvme_queue *nvmeq = data;
+	u16 start, end;
+
+	/*
+	 * The rmb/wmb pair ensures we see all updates from a previous run of
+	 * the irq handler, even if that was on another CPU.
+	 */
+	rmb();
+	if (nvme_process_cq(nvmeq, &start, &end))
+		nvme_ring_cq_doorbell(nvmeq);
+	wmb();
+
+	if (start != end) {
+		nvme_complete_cqes(nvmeq, start, end);
+		return IRQ_HANDLED;
+	}
+
+	return IRQ_NONE;
+}
 static irqreturn_t nvme_irq_check(int irq, void *data)
 {
 	struct nvme_queue *nvmeq = data;
@@ -1059,7 +1118,8 @@ static void nvme_poll_irqdisable(struct nvme_queue *nvmeq)
 	u16 start, end;
 
 	disable_irq(pci_irq_vector(pdev, nvmeq->cq_vector));
-	nvme_process_cq(nvmeq, &start, &end);
+	if (nvme_process_cq(nvmeq, &start, &end))
+		nvme_ring_cq_doorbell(nvmeq);
 	enable_irq(pci_irq_vector(pdev, nvmeq->cq_vector));
 
 	nvme_complete_cqes(nvmeq, start, end);
@@ -1087,9 +1147,23 @@ static int nvme_poll(struct blk_mq_hw_ctx *hctx)
 
 	if (!nvme_poll_queue_enter(nvmeq, &start, &end))
 		return 0;
-	nvme_process_cq(nvmeq, &start, &end);
+	if (nvme_process_cq(nvmeq, &start, &end))
+		writel(nvmeq->cq_head, nvmeq->q_db + nvmeq->dev->db_stride);
 	nvme_poll_queue_exit(nvmeq, start, end);
 	return start != end;
+}
+
+static int nvme_shadow_poll(struct blk_mq_hw_ctx *hctx)
+{
+	struct nvme_queue *nvmeq = hctx->driver_data;
+	u16 start, end;
+
+	if (!nvme_poll_queue_enter(nvmeq, &start, &end))
+		return 0;
+	if (nvme_process_cq(nvmeq, &start, &end))
+		nvme_ring_cq_doorbell(nvmeq);
+	nvme_poll_queue_exit(nvmeq, start, end);
+	return 1;
 }
 
 static void nvme_pci_submit_async_event(struct nvme_ctrl *ctrl)
@@ -1488,12 +1562,16 @@ static int queue_request_irq(struct nvme_queue *nvmeq)
 {
 	struct pci_dev *pdev = to_pci_dev(nvmeq->dev->dev);
 	int nr = nvmeq->dev->ctrl.instance;
+	irq_handler_t handler = nvme_irq;
+
+	if (nvmeq->dev->dbbuf_dbs && nvmeq->qid > 0)
+		handler = nvme_shadow_irq;
 
 	if (use_threaded_interrupts) {
 		return pci_request_irq(pdev, nvmeq->cq_vector, nvme_irq_check,
-				nvme_irq, nvmeq, "nvme%dq%d", nr, nvmeq->qid);
+				handler, nvmeq, "nvme%dq%d", nr, nvmeq->qid);
 	} else {
-		return pci_request_irq(pdev, nvmeq->cq_vector, nvme_irq,
+		return pci_request_irq(pdev, nvmeq->cq_vector, handler,
 				NULL, nvmeq, "nvme%dq%d", nr, nvmeq->qid);
 	}
 }
@@ -1578,6 +1656,17 @@ static const struct blk_mq_ops nvme_mq_ops = {
 	.map_queues	= nvme_pci_map_queues,
 	.timeout	= nvme_timeout,
 	.poll		= nvme_poll,
+};
+
+static const struct blk_mq_ops nvme_mq_shadow_ops = {
+	.queue_rq	= nvme_shadow_queue_rq,
+	.complete	= nvme_pci_complete_rq,
+	.commit_rqs	= nvme_commit_rqs,
+	.init_hctx	= nvme_init_hctx,
+	.init_request	= nvme_init_request,
+	.map_queues	= nvme_pci_map_queues,
+	.timeout	= nvme_timeout,
+	.poll		= nvme_shadow_poll,
 };
 
 static bool nvme_fail_queue_request(struct request *req, void *data, bool reserved)
@@ -2294,6 +2383,11 @@ static int nvme_dev_add(struct nvme_dev *dev)
 
 	if (!dev->ctrl.tagset) {
 		dev->tagset.ops = &nvme_mq_ops;
+
+		nvme_dbbuf_set(dev);
+		if (dev->dbbuf_dbs)
+			dev->tagset.ops = &nvme_mq_shadow_ops;
+
 		dev->tagset.nr_hw_queues = dev->online_queues - 1;
 		dev->tagset.nr_maps = 2; /* default + read */
 		if (dev->io_queues[HCTX_TYPE_POLL])
@@ -2317,8 +2411,6 @@ static int nvme_dev_add(struct nvme_dev *dev)
 			return ret;
 		}
 		dev->ctrl.tagset = &dev->tagset;
-
-		nvme_dbbuf_set(dev);
 	} else {
 		blk_mq_update_nr_hw_queues(&dev->tagset, dev->online_queues - 1);
 
