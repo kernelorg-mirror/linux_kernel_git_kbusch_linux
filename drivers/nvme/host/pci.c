@@ -1077,20 +1077,9 @@ static int nvme_poll_irqdisable(struct nvme_queue *nvmeq, unsigned int tag)
 	u16 start, end;
 	int found;
 
-	/*
-	 * For a poll queue we need to protect against the polling thread
-	 * using the CQ lock.  For normal interrupt driven threads we have
-	 * to disable the interrupt to avoid racing with it.
-	 */
-	if (nvmeq->cq_vector == -1) {
-		spin_lock(&nvmeq->cq_poll_lock);
-		found = nvme_process_cq(nvmeq, &start, &end, tag);
-		spin_unlock(&nvmeq->cq_poll_lock);
-	} else {
-		disable_irq(pci_irq_vector(pdev, nvmeq->cq_vector));
-		found = nvme_process_cq(nvmeq, &start, &end, tag);
-		enable_irq(pci_irq_vector(pdev, nvmeq->cq_vector));
-	}
+	disable_irq(pci_irq_vector(pdev, nvmeq->cq_vector));
+	found = nvme_process_cq(nvmeq, &start, &end, tag);
+	enable_irq(pci_irq_vector(pdev, nvmeq->cq_vector));
 
 	nvme_complete_cqes(nvmeq, start, end);
 	return found;
@@ -1284,7 +1273,8 @@ static enum blk_eh_timer_return nvme_timeout(struct request *req, bool reserved)
 	/*
 	 * Did we miss an interrupt?
 	 */
-	if (nvme_poll_irqdisable(nvmeq, req->tag)) {
+	if (!test_bit(NVMEQ_POLLED, &nvmeq->flags) &&
+	    nvme_poll_irqdisable(nvmeq, req->tag)) {
 		dev_warn(dev->ctrl.device,
 			 "I/O %d QID %d timeout, completion polled\n",
 			 req->tag, nvmeq->qid);
