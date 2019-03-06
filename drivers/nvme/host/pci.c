@@ -178,13 +178,12 @@ static inline struct nvme_dev *to_nvme_dev(struct nvme_ctrl *ctrl)
  */
 struct nvme_queue {
 	struct nvme_dev *dev;
-	spinlock_t sq_lock;
 	struct nvme_command *sq_cmds;
 	volatile struct nvme_completion *cqes;
 	struct blk_mq_tags **tags;
-	dma_addr_t sq_dma_addr;
-	dma_addr_t cq_dma_addr;
 	u32 __iomem *q_db;
+	unsigned long flags;
+	spinlock_t sq_lock;
 	u16 q_depth;
 	u16 cq_vector;
 	u16 sq_tail;
@@ -192,11 +191,12 @@ struct nvme_queue {
 	u16 qid;
 	u8 cq_phase;
 	u8 polling;
-	unsigned long flags;
 #define NVMEQ_ENABLED		0
 #define NVMEQ_SQ_CMB		1
 #define NVMEQ_DELETE_ERROR	2
 #define NVMEQ_POLLED		3
+	dma_addr_t sq_dma_addr;
+	dma_addr_t cq_dma_addr;
 	u32 *dbbuf_sq_db;
 	u32 *dbbuf_cq_db;
 	u32 *dbbuf_sq_ei;
