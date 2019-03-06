@@ -180,8 +180,6 @@ struct nvme_queue {
 	struct nvme_dev *dev;
 	spinlock_t sq_lock;
 	struct nvme_command *sq_cmds;
-	 /* only used for poll queues: */
-	spinlock_t cq_poll_lock ____cacheline_aligned_in_smp;
 	volatile struct nvme_completion *cqes;
 	struct blk_mq_tags **tags;
 	dma_addr_t sq_dma_addr;
@@ -193,6 +191,7 @@ struct nvme_queue {
 	u16 cq_head;
 	u16 qid;
 	u8 cq_phase;
+	u8 polling;
 	unsigned long flags;
 #define NVMEQ_ENABLED		0
 #define NVMEQ_SQ_CMB		1
@@ -1066,21 +1065,31 @@ static void nvme_poll_irqdisable(struct nvme_queue *nvmeq)
 	nvme_complete_cqes(nvmeq, start, end);
 }
 
+static inline bool nvme_poll_queue_enter(struct nvme_queue *nvmeq, u16 *start,
+					u16 *end)
+{
+	if (!nvme_cqe_pending(nvmeq))
+		return false;
+	return cmpxchg(&nvmeq->polling, 0, 1) == 0;
+}
+
+static inline void nvme_poll_queue_exit(struct nvme_queue *nvmeq, u16 start,
+					u16 end)
+{
+	WRITE_ONCE(nvmeq->polling, 0);
+	nvme_complete_cqes(nvmeq, start, end);
+}
+
 static int nvme_poll(struct blk_mq_hw_ctx *hctx)
 {
 	struct nvme_queue *nvmeq = hctx->driver_data;
 	u16 start, end;
-	bool found;
 
-	if (!nvme_cqe_pending(nvmeq))
+	if (!nvme_poll_queue_enter(nvmeq, &start, &end))
 		return 0;
-
-	spin_lock(&nvmeq->cq_poll_lock);
-	found = nvme_process_cq(nvmeq, &start, &end);
-	spin_unlock(&nvmeq->cq_poll_lock);
-
-	nvme_complete_cqes(nvmeq, start, end);
-	return found;
+	nvme_process_cq(nvmeq, &start, &end);
+	nvme_poll_queue_exit(nvmeq, start, end);
+	return start != end;
 }
 
 static void nvme_pci_submit_async_event(struct nvme_ctrl *ctrl)
@@ -1458,9 +1467,9 @@ static int nvme_alloc_queue(struct nvme_dev *dev, int qid, int depth)
 
 	nvmeq->dev = dev;
 	spin_lock_init(&nvmeq->sq_lock);
-	spin_lock_init(&nvmeq->cq_poll_lock);
 	nvmeq->cq_head = 0;
 	nvmeq->cq_phase = 1;
+	nvmeq->polling = 0;
 	nvmeq->q_db = &dev->dbs[qid * 2 * dev->db_stride];
 	nvmeq->q_depth = depth;
 	nvmeq->qid = qid;
