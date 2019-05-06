@@ -581,6 +581,14 @@ config ZSMALLOC
 	  returned by an alloc().  This handle must be mapped in order to
 	  access the allocated space.
 
+config DEMOTE
+	bool "Demote swap pages"
+	select FRONTSWAP
+	default n
+	help
+	 When anonomous memory is being swapped, see if there is another memory
+	 node that accepts those pages.
+
 config PGTABLE_MAPPING
 	bool "Use page table mapping to access object in zsmalloc"
 	depends on ZSMALLOC
