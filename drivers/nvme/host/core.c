@@ -3449,8 +3449,19 @@ static void nvme_validate_ns(struct nvme_ctrl *ctrl, unsigned nsid)
 
 	ns = nvme_find_get_ns(ctrl, nsid);
 	if (ns) {
-		if (ns->disk && revalidate_disk(ns->disk))
-			nvme_ns_remove(ns);
+		if (ns->disk) {
+			int ret = __nvme_revalidate_disk(ns->disk);
+
+			/*
+			 * Remove the ns only if the return status is
+			 * not a temporal/retryable execution error
+			 */
+			if (ret && ret != -ENOMEM &&
+			    !(ret > 0 && ret & NVME_SC_DNR))
+				nvme_ns_remove(ns);
+			else
+				check_disk_size(ns->disk, true);
+		}
 		nvme_put_ns(ns);
 	} else
 		nvme_alloc_ns(ctrl, nsid);
