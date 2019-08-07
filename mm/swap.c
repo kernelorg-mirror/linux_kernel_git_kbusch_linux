@@ -50,6 +50,7 @@ static DEFINE_PER_CPU(struct pagevec, lru_deactivate_file_pvecs);
 static DEFINE_PER_CPU(struct pagevec, lru_lazyfree_pvecs);
 #ifdef CONFIG_SMP
 static DEFINE_PER_CPU(struct pagevec, activate_page_pvecs);
+static DEFINE_PER_CPU(struct pagevec, promotable_page_pvecs);
 #endif
 
 /*
@@ -274,7 +275,7 @@ static void update_page_reclaim_stat(struct lruvec *lruvec,
 static void __activate_page(struct page *page, struct lruvec *lruvec,
 			    void *arg)
 {
-	if (PageLRU(page) && !PageActive(page) && !PageUnevictable(page)) {
+	if (PageLRU(page) && !PageActive(page) && !PageUnevictable(page) && !PagePromotable(page)) {
 		int file = page_is_file_cache(page);
 		int lru = page_lru_base_type(page);
 
@@ -286,6 +287,29 @@ static void __activate_page(struct page *page, struct lruvec *lruvec,
 
 		__count_vm_event(PGACTIVATE);
 		update_page_reclaim_stat(lruvec, file, 1);
+	}
+}
+
+static void __promotable_page(struct page *page, struct lruvec *lruvec,
+			    void *arg)
+{
+	if (next_promotion_node(page_to_nid(page)) < 0)
+		return;
+
+	if (PageLRU(page) && PageActive(page) && !PagePromotable(page) &&
+	    !PageUnevictable(page)) {
+		struct zone *zone = page_zone(page);
+		int file = page_is_file_cache(page);
+		int lru = page_lru_base_type(page);
+
+		del_page_from_lru_list(page, lruvec, lru + LRU_ACTIVE);
+		SetPagePromotable(page);
+		add_page_to_lru_list(page, lruvec, lru + LRU_PROMOTE);
+		trace_mm_lru_promotable(page);
+
+		__count_vm_event(PGPROMOTABLE);
+		update_page_reclaim_stat(lruvec, file, 1);
+		wakeup_kswapd(zone, 0, 0, zone_idx(zone));
 	}
 }
 
@@ -316,8 +340,40 @@ void activate_page(struct page *page)
 	}
 }
 
+static void promotable_page_drain(int cpu)
+{
+	struct pagevec *pvec = &per_cpu(promotable_page_pvecs, cpu);
+
+	if (pagevec_count(pvec))
+		pagevec_lru_move_fn(pvec, __promotable_page, NULL);
+}
+
+static bool need_promotable_page_drain(int cpu)
+{
+	return pagevec_count(&per_cpu(promotable_page_pvecs, cpu)) != 0;
+}
+
+static void promotable_page(struct page *page)
+{
+	struct pagevec *pvec;
+
+	page = compound_head(page);
+	if (PageUnevictable(page) || PageHuge(page) || !PageLRU(page) ||
+	    next_promotion_node(page_to_nid(page)) < 0)
+		return;
+
+	pvec = &get_cpu_var(promotable_page_pvecs);
+	get_page(page);
+	if (!pagevec_add(pvec, page) || PageCompound(page))
+		pagevec_lru_move_fn(pvec, __promotable_page, NULL);
+	put_cpu_var(promotable_page_pvecs);
+}
 #else
 static inline void activate_page_drain(int cpu)
+{
+}
+
+static inline void promotable_page_drain(int cpu)
 {
 }
 
@@ -328,6 +384,16 @@ void activate_page(struct page *page)
 	page = compound_head(page);
 	spin_lock_irq(&pgdat->lru_lock);
 	__activate_page(page, mem_cgroup_page_lruvec(page, pgdat), NULL);
+	spin_unlock_irq(&pgdat->lru_lock);
+}
+
+void promotable_page(struct page *page)
+{
+	pg_data_t *pgdat = page_pgdat(page);
+
+	page = compound_head(page);
+	spin_lock_irq(&pgdat->lru_lock);
+	__promotable_page(page, mem_cgroup_page_lruvec(page, pgdat), NULL);
 	spin_unlock_irq(&pgdat->lru_lock);
 }
 #endif
@@ -365,6 +431,7 @@ static void __lru_cache_activate_page(struct page *page)
  * inactive,unreferenced	->	inactive,referenced
  * inactive,referenced		->	active,unreferenced
  * active,unreferenced		->	active,referenced
+ * active,referenced		->	promotable
  *
  * When a newly allocated page is not yet visible, so safe for non-atomic ops,
  * __SetPageReferenced(page) may be substituted for mark_page_accessed(page).
@@ -390,6 +457,9 @@ void mark_page_accessed(struct page *page)
 			workingset_activation(page);
 	} else if (!PageReferenced(page)) {
 		SetPageReferenced(page);
+	} else if (PageActive(page) && PageReferenced(page)) {
+		if (!PagePromotable(page) && PageLRU(page))
+			promotable_page(page);
 	}
 	if (page_is_idle(page))
 		clear_page_idle(page);
@@ -595,6 +665,7 @@ void lru_add_drain_cpu(int cpu)
 		pagevec_lru_move_fn(pvec, lru_lazyfree_fn, NULL);
 
 	activate_page_drain(cpu);
+	promotable_page_drain(cpu);
 }
 
 /**
@@ -688,7 +759,8 @@ void lru_add_drain_all(void)
 		    pagevec_count(&per_cpu(lru_rotate_pvecs, cpu)) ||
 		    pagevec_count(&per_cpu(lru_deactivate_file_pvecs, cpu)) ||
 		    pagevec_count(&per_cpu(lru_lazyfree_pvecs, cpu)) ||
-		    need_activate_page_drain(cpu)) {
+		    need_activate_page_drain(cpu) ||
+		    need_promotable_page_drain(cpu)) {
 			INIT_WORK(work, lru_add_drain_per_cpu);
 			queue_work_on(cpu, mm_percpu_wq, work);
 			cpumask_set_cpu(cpu, &has_work);

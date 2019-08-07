@@ -699,7 +699,8 @@ static inline bool reclaim_anon_pages(struct mem_cgroup *memcg,
 	}
 
 	/* Also age anon pages if we can auto-migrate them */
-	if (next_demotion_node(node_id) >= 0)
+	if (next_demotion_node(node_id) >= 0 ||
+	    next_promotion_node(node_id) >= 0)
 		return true;
 
 	/* No way to reclaim anon pages */

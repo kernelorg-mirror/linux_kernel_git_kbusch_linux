@@ -419,6 +419,42 @@ TRACE_EVENT(mm_vmscan_lru_shrink_active,
 		show_reclaim_flags(__entry->reclaim_flags))
 );
 
+TRACE_EVENT(mm_vmscan_lru_shrink_promotable,
+
+	TP_PROTO(int nid, unsigned long nr_taken,
+		unsigned long nr_active, unsigned long nr_referenced,
+		unsigned long nr_promoted, int priority, int file),
+
+	TP_ARGS(nid, nr_taken, nr_active, nr_referenced, nr_promoted, priority, file),
+
+	TP_STRUCT__entry(
+		__field(int, nid)
+		__field(unsigned long, nr_taken)
+		__field(unsigned long, nr_active)
+		__field(unsigned long, nr_referenced)
+		__field(unsigned long, nr_promoted)
+		__field(int, priority)
+		__field(int, reclaim_flags)
+	),
+
+	TP_fast_assign(
+		__entry->nid = nid;
+		__entry->nr_taken = nr_taken;
+		__entry->nr_active = nr_active;
+		__entry->nr_referenced = nr_referenced;
+		__entry->nr_promoted = nr_promoted;
+		__entry->priority = priority;
+		__entry->reclaim_flags = trace_reclaim_flags(file);
+	),
+
+	TP_printk("nid=%d nr_taken=%ld nr_actived=%ld nr_referenced=%ld nr_promoted=%ld priority=%d flags=%s",
+		__entry->nid,
+		__entry->nr_taken,
+		__entry->nr_active, __entry->nr_referenced, __entry->nr_promoted,
+		__entry->priority,
+		show_reclaim_flags(__entry->reclaim_flags))
+);
+
 TRACE_EVENT(mm_vmscan_inactive_list_is_low,
 
 	TP_PROTO(int nid, int reclaim_idx,

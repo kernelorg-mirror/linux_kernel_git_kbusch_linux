@@ -96,7 +96,10 @@ static __always_inline enum lru_list page_off_lru(struct page *page)
 		lru = LRU_UNEVICTABLE;
 	} else {
 		lru = page_lru_base_type(page);
-		if (PageActive(page)) {
+		if (PagePromotable(page)) {
+			ClearPagePromotable(page);
+			lru += LRU_PROMOTE;
+		} else if (PageActive(page)) {
 			__ClearPageActive(page);
 			lru += LRU_ACTIVE;
 		}
@@ -119,7 +122,9 @@ static __always_inline enum lru_list page_lru(struct page *page)
 		lru = LRU_UNEVICTABLE;
 	else {
 		lru = page_lru_base_type(page);
-		if (PageActive(page))
+		if (PagePromotable(page))
+			lru += LRU_PROMOTE;
+		else if (PageActive(page))
 			lru += LRU_ACTIVE;
 	}
 	return lru;

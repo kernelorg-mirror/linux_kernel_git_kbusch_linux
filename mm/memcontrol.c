@@ -96,8 +96,10 @@ static bool do_memsw_account(void)
 static const char *const mem_cgroup_lru_names[] = {
 	"inactive_anon",
 	"active_anon",
+	"promotable_anon",
 	"inactive_file",
 	"active_file",
+	"promotable_file",
 	"unevictable",
 };
 

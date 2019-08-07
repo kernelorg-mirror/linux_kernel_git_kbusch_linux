@@ -2072,6 +2072,75 @@ shrink_inactive_list(unsigned long nr_to_scan, struct lruvec *lruvec,
 	return nr_reclaimed;
 }
 
+static unsigned int shrink_promote_list(unsigned long nr_to_scan,
+					struct lruvec *lruvec,
+					struct scan_control *sc,
+					enum lru_list lru)
+{
+	int rc, file = is_file_lru(lru);
+	unsigned long nr_reclaimed = 0, nr_scanned, nr_taken, nr_activate;
+	LIST_HEAD(l_hold);
+	LIST_HEAD(l_free);
+	LIST_HEAD(l_active);
+	struct pglist_data *pgdat = lruvec_pgdat(lruvec);
+
+	lru_add_drain();
+	spin_lock_irq(&pgdat->lru_lock);
+	nr_taken = isolate_lru_pages(nr_to_scan, lruvec, &l_hold,
+				     &nr_scanned, sc, lru);
+	spin_unlock_irq(&pgdat->lru_lock);
+
+	if (list_empty(&l_hold))
+		return 0;
+
+	while (!list_empty(&l_hold)) {
+		struct page *page;
+
+		cond_resched();
+		page = lru_to_page(&l_hold);
+		list_del(&page->lru);
+
+		if (!trylock_page(page)) {
+			putback_lru_page(page);
+			continue;
+		}
+
+		ClearPagePromotable(page);
+		rc = migrate_promote_mapping(page);
+		if (rc == -ENOMEM && PageTransHuge(page) &&
+		    !split_huge_page_to_list(page, &l_hold))
+			rc = migrate_promote_mapping(page);
+
+		if (rc == MIGRATEPAGE_SUCCESS) {
+			unlock_page(page);
+			if (likely(put_page_testzero(page)))
+				list_add(&page->lru, &l_free);
+			nr_reclaimed++;
+		} else {
+			SetPageActive(page);
+			count_memcg_page_event(page, PGACTIVATE);
+			unlock_page(page);
+			list_add(&page->lru, &l_active);
+		}
+	}
+
+	mem_cgroup_uncharge_list(&l_free);
+	try_to_unmap_flush();
+	free_unref_page_list(&l_free);
+
+	spin_lock_irq(&pgdat->lru_lock);
+	nr_activate = move_pages_to_lru(lruvec, &l_active);
+	spin_unlock_irq(&pgdat->lru_lock);
+
+	mem_cgroup_uncharge_list(&l_active);
+	free_unref_page_list(&l_active);
+
+	trace_mm_vmscan_lru_shrink_promotable(pgdat->node_id, nr_taken, nr_activate,
+			nr_scanned, nr_reclaimed, sc->priority, file);
+
+	return nr_reclaimed;
+}
+
 static void shrink_active_list(unsigned long nr_to_scan,
 			       struct lruvec *lruvec,
 			       struct scan_control *sc,
@@ -2256,6 +2325,8 @@ static unsigned long shrink_list(enum lru_list lru, unsigned long nr_to_scan,
 		if (inactive_list_is_low(lruvec, is_file_lru(lru), sc, true))
 			shrink_active_list(nr_to_scan, lruvec, sc, lru);
 		return 0;
+	} else if (is_promote_lru(lru)) {
+		return shrink_promote_list(nr_to_scan, lruvec, sc, lru);
 	}
 
 	return shrink_inactive_list(nr_to_scan, lruvec, sc, lru);
@@ -2274,8 +2345,8 @@ enum scan_balance {
  * by looking at the fraction of the pages scanned we did rotate back
  * onto the active list instead of evict.
  *
- * nr[0] = anon inactive pages to scan; nr[1] = anon active pages to scan
- * nr[2] = file inactive pages to scan; nr[3] = file active pages to scan
+ * nr[0] = anon inactive pages to scan; nr[1] = anon active pages to scan; nr[2] = anon promotable pages to scan
+ * nr[3] = file inactive pages to scan; nr[4] = file active pages to scan; nr[5] = file promotable pages to scan
  */
 static void get_scan_count(struct lruvec *lruvec, struct mem_cgroup *memcg,
 			   struct scan_control *sc, unsigned long *nr)
@@ -2398,8 +2469,10 @@ static void get_scan_count(struct lruvec *lruvec, struct mem_cgroup *memcg,
 	 */
 
 	anon  = lruvec_lru_size(lruvec, LRU_ACTIVE_ANON, MAX_NR_ZONES) +
+		lruvec_lru_size(lruvec, LRU_PROMOTE_ANON, MAX_NR_ZONES) +
 		lruvec_lru_size(lruvec, LRU_INACTIVE_ANON, MAX_NR_ZONES);
 	file  = lruvec_lru_size(lruvec, LRU_ACTIVE_FILE, MAX_NR_ZONES) +
+		lruvec_lru_size(lruvec, LRU_PROMOTE_FILE, MAX_NR_ZONES) +
 		lruvec_lru_size(lruvec, LRU_INACTIVE_FILE, MAX_NR_ZONES);
 
 	spin_lock_irq(&pgdat->lru_lock);
@@ -2440,7 +2513,7 @@ out:
 		 * If the cgroup's already been deleted, make sure to
 		 * scrape out the remaining cache.
 		 */
-		if (!scan && !mem_cgroup_online(memcg))
+		if (!scan && (!mem_cgroup_online(memcg) || is_promote_lru(lru)))
 			scan = min(size, SWAP_CLUSTER_MAX);
 
 		switch (scan_balance) {
@@ -2510,7 +2583,8 @@ static void shrink_node_memcg(struct pglist_data *pgdat, struct mem_cgroup *memc
 			 sc->priority == DEF_PRIORITY);
 
 	blk_start_plug(&plug);
-	while (nr[LRU_INACTIVE_ANON] || nr[LRU_ACTIVE_FILE] ||
+	while (nr[LRU_INACTIVE_ANON] || nr[LRU_PROMOTE_ANON] ||
+	       nr[LRU_ACTIVE_FILE]   || nr[LRU_PROMOTE_FILE] ||
 					nr[LRU_INACTIVE_FILE]) {
 		unsigned long nr_anon, nr_file, percentage;
 		unsigned long nr_scanned;
@@ -2537,8 +2611,8 @@ static void shrink_node_memcg(struct pglist_data *pgdat, struct mem_cgroup *memc
 		 * stop reclaiming one LRU and reduce the amount scanning
 		 * proportional to the original scan target.
 		 */
-		nr_file = nr[LRU_INACTIVE_FILE] + nr[LRU_ACTIVE_FILE];
-		nr_anon = nr[LRU_INACTIVE_ANON] + nr[LRU_ACTIVE_ANON];
+		nr_file = nr[LRU_INACTIVE_FILE] + nr[LRU_ACTIVE_FILE] + nr[LRU_PROMOTE_FILE];
+		nr_anon = nr[LRU_INACTIVE_ANON] + nr[LRU_ACTIVE_ANON] + nr[LRU_PROMOTE_ANON];
 
 		/*
 		 * It's just vindictive to attack the larger once the smaller

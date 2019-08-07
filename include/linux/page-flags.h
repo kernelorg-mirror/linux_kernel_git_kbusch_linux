@@ -131,6 +131,9 @@ enum pageflags {
 	PG_young,
 	PG_idle,
 #endif
+#ifdef CONFIG_HMEM_REPORTING
+	PG_promotable,
+#endif
 	__NR_PAGEFLAGS,
 
 	/* Filesystems */
@@ -429,6 +432,12 @@ TESTPAGEFLAG(Young, young, PF_ANY)
 SETPAGEFLAG(Young, young, PF_ANY)
 TESTCLEARFLAG(Young, young, PF_ANY)
 PAGEFLAG(Idle, idle, PF_ANY)
+#endif
+
+#ifdef CONFIG_HMEM_REPORTING
+PAGEFLAG(Promotable, promotable, PF_ANY)
+#else
+PAGEFLAG_FALSE(Promotable)
 #endif
 
 /*

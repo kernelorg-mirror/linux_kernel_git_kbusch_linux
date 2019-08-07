@@ -193,8 +193,10 @@ enum zone_stat_item {
 	NR_ZONE_LRU_BASE, /* Used only for compaction and reclaim retry */
 	NR_ZONE_INACTIVE_ANON = NR_ZONE_LRU_BASE,
 	NR_ZONE_ACTIVE_ANON,
+	NR_ZONE_PROMOTE_ANON,
 	NR_ZONE_INACTIVE_FILE,
 	NR_ZONE_ACTIVE_FILE,
+	NR_ZONE_PROMOTE_FILE,
 	NR_ZONE_UNEVICTABLE,
 	NR_ZONE_WRITE_PENDING,	/* Count of dirty, writeback and unstable pages */
 	NR_MLOCK,		/* mlock()ed pages found and moved off LRU */
@@ -212,8 +214,10 @@ enum node_stat_item {
 	NR_LRU_BASE,
 	NR_INACTIVE_ANON = NR_LRU_BASE, /* must match order of LRU_[IN]ACTIVE */
 	NR_ACTIVE_ANON,		/*  "     "     "   "       "         */
+	NR_PROMOTE_ANON,	/*  "     "     "   "       "         */
 	NR_INACTIVE_FILE,	/*  "     "     "   "       "         */
 	NR_ACTIVE_FILE,		/*  "     "     "   "       "         */
+	NR_PROMOTE_FILE,	/*  "     "     "   "       "         */
 	NR_UNEVICTABLE,		/*  "     "     "   "       "         */
 	NR_SLAB_RECLAIMABLE,
 	NR_SLAB_UNRECLAIMABLE,
@@ -255,29 +259,37 @@ enum node_stat_item {
  */
 #define LRU_BASE 0
 #define LRU_ACTIVE 1
-#define LRU_FILE 2
+#define LRU_PROMOTE 2
+#define LRU_FILE 3
 
 enum lru_list {
 	LRU_INACTIVE_ANON = LRU_BASE,
 	LRU_ACTIVE_ANON = LRU_BASE + LRU_ACTIVE,
+	LRU_PROMOTE_ANON = LRU_BASE + LRU_PROMOTE,
 	LRU_INACTIVE_FILE = LRU_BASE + LRU_FILE,
 	LRU_ACTIVE_FILE = LRU_BASE + LRU_FILE + LRU_ACTIVE,
+	LRU_PROMOTE_FILE = LRU_BASE + LRU_FILE + LRU_PROMOTE,
 	LRU_UNEVICTABLE,
 	NR_LRU_LISTS
 };
 
 #define for_each_lru(lru) for (lru = 0; lru < NR_LRU_LISTS; lru++)
 
-#define for_each_evictable_lru(lru) for (lru = 0; lru <= LRU_ACTIVE_FILE; lru++)
+#define for_each_evictable_lru(lru) for (lru = 0; lru <= LRU_PROMOTE_FILE; lru++)
 
 static inline int is_file_lru(enum lru_list lru)
 {
-	return (lru == LRU_INACTIVE_FILE || lru == LRU_ACTIVE_FILE);
+	return (lru == LRU_INACTIVE_FILE || lru == LRU_ACTIVE_FILE || lru == LRU_PROMOTE_FILE);
 }
 
 static inline int is_active_lru(enum lru_list lru)
 {
 	return (lru == LRU_ACTIVE_ANON || lru == LRU_ACTIVE_FILE);
+}
+
+static inline int is_promote_lru(enum lru_list lru)
+{
+	return (lru == LRU_PROMOTE_ANON || lru == LRU_PROMOTE_FILE);
 }
 
 struct zone_reclaim_stat {
