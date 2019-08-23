@@ -2679,6 +2679,7 @@ extern bool is_bad_inode(struct inode *);
 extern void check_disk_size_change(struct gendisk *disk,
 		struct block_device *bdev, bool verbose);
 extern int revalidate_disk(struct gendisk *);
+extern void check_disk_size(struct gendisk *disk, bool verbose);
 extern int check_disk_change(struct block_device *);
 extern int __invalidate_device(struct block_device *, bool);
 extern int invalidate_partition(struct gendisk *, int);

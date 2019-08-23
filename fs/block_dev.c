@@ -1482,6 +1482,21 @@ void check_disk_size_change(struct gendisk *disk, struct block_device *bdev,
 	}
 }
 
+void check_disk_size(struct gendisk *disk, bool verbose)
+{
+	struct block_device *bdev = bdget_disk(disk, 0);
+
+	if (!bdev)
+		return;
+
+	mutex_lock(&bdev->bd_mutex);
+	check_disk_size_change(disk, bdev, verbose);
+	bdev->bd_invalidated = 0;
+	mutex_unlock(&bdev->bd_mutex);
+	bdput(bdev);
+}
+EXPORT_SYMBOL_GPL(check_disk_size);
+
 /**
  * revalidate_disk - wrapper for lower-level driver's revalidate_disk call-back
  * @disk: struct gendisk to be revalidated
@@ -1501,18 +1516,8 @@ int revalidate_disk(struct gendisk *disk)
 	 * Hidden disks don't have associated bdev so there's no point in
 	 * revalidating it.
 	 */
-	if (!(disk->flags & GENHD_FL_HIDDEN)) {
-		struct block_device *bdev = bdget_disk(disk, 0);
-
-		if (!bdev)
-			return ret;
-
-		mutex_lock(&bdev->bd_mutex);
-		check_disk_size_change(disk, bdev, ret == 0);
-		bdev->bd_invalidated = 0;
-		mutex_unlock(&bdev->bd_mutex);
-		bdput(bdev);
-	}
+	if (!(disk->flags & GENHD_FL_HIDDEN))
+		check_disk_size(disk, ret == 0);
 	return ret;
 }
 EXPORT_SYMBOL(revalidate_disk);
