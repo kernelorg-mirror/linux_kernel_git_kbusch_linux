@@ -1698,10 +1698,8 @@ static void nvme_update_disk_info(struct gendisk *disk,
 	blk_mq_unfreeze_queue(disk->queue);
 }
 
-static void __nvme_revalidate_disk(struct gendisk *disk, struct nvme_id_ns *id)
+static void nvme_revalidate_ns(struct nvme_ns *ns, struct nvme_id_ns *id)
 {
-	struct nvme_ns *ns = disk->private_data;
-
 	/*
 	 * If identify namespace failed, use default 512 byte block size so
 	 * block layer can use before failing read/write for 0 capacity.
@@ -1720,7 +1718,7 @@ static void __nvme_revalidate_disk(struct gendisk *disk, struct nvme_id_ns *id)
 
 	if (ns->noiob)
 		nvme_set_chunk_size(ns);
-	nvme_update_disk_info(disk, ns, id);
+	nvme_update_disk_info(ns->disk, ns, id);
 #ifdef CONFIG_NVME_MULTIPATH
 	if (ns->head->disk) {
 		nvme_update_disk_info(ns->head->disk, ns, id);
@@ -1729,7 +1727,7 @@ static void __nvme_revalidate_disk(struct gendisk *disk, struct nvme_id_ns *id)
 #endif
 }
 
-static int nvme_revalidate_disk(struct gendisk *disk)
+static int __nvme_revalidate_disk(struct gendisk *disk)
 {
 	struct nvme_ns *ns = disk->private_data;
 	struct nvme_ctrl *ctrl = ns->ctrl;
@@ -1751,7 +1749,7 @@ static int nvme_revalidate_disk(struct gendisk *disk)
 		goto out;
 	}
 
-	__nvme_revalidate_disk(disk, id);
+	nvme_revalidate_ns(ns, id);
 	ret = nvme_report_ns_ids(ctrl, ns->head->ns_id, id, &ids);
 	if (ret)
 		goto out;
@@ -1764,6 +1762,16 @@ static int nvme_revalidate_disk(struct gendisk *disk)
 
 out:
 	kfree(id);
+	return ret;
+}
+
+static int nvme_revalidate_disk(struct gendisk *disk)
+{
+	int ret;
+
+	ret = __nvme_revalidate_disk(disk);
+	if (ret > 0)
+		return blk_status_to_errno(nvme_error_status(ret));
 	return ret;
 }
 
@@ -3367,7 +3375,7 @@ static int nvme_alloc_ns(struct nvme_ctrl *ctrl, unsigned nsid)
 	memcpy(disk->disk_name, disk_name, DISK_NAME_LEN);
 	ns->disk = disk;
 
-	__nvme_revalidate_disk(disk, id);
+	nvme_revalidate_ns(ns, id);
 
 	if ((ctrl->quirks & NVME_QUIRK_LIGHTNVM) && id->vs[0] == 0x1) {
 		ret = nvme_nvm_register(ns, disk_name, node);
