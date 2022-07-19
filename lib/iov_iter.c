@@ -1070,6 +1070,9 @@ void iov_iter_advance(struct iov_iter *i, size_t size)
 		iov_iter_iovec_advance(i, size);
 	} else if (iov_iter_is_bvec(i)) {
 		iov_iter_bvec_advance(i, size);
+	} else if (iov_iter_is_dma_tag(i)) {
+		i->iov_offset += size;
+		i->count -= size;
 	} else if (iov_iter_is_pipe(i)) {
 		pipe_advance(i, size);
 	} else if (unlikely(iov_iter_is_xarray(i))) {
@@ -1200,6 +1203,21 @@ void iov_iter_bvec(struct iov_iter *i, unsigned int direction,
 	};
 }
 EXPORT_SYMBOL(iov_iter_bvec);
+
+void iov_iter_dma_tag(struct iov_iter *i, unsigned int direction,
+			void *dma_tag, unsigned int dma_offset,
+			size_t count)
+{
+	WARN_ON(direction & ~(READ | WRITE));
+	*i = (struct iov_iter){
+		.iter_type = ITER_DMA_TAG,
+		.data_source = direction,
+		.dma_tag = dma_tag,
+		.iov_offset = dma_offset,
+		.count = count
+	};
+}
+EXPORT_SYMBOL(iov_iter_dma_tag);
 
 void iov_iter_pipe(struct iov_iter *i, unsigned int direction,
 			struct pipe_inode_info *pipe,
@@ -1334,6 +1352,9 @@ bool iov_iter_is_aligned(const struct iov_iter *i, unsigned addr_mask,
 
 	if (iov_iter_is_bvec(i))
 		return iov_iter_aligned_bvec(i, addr_mask, len_mask);
+
+	if (iov_iter_is_dma_tag(i))
+		return !(i->iov_offset & addr_mask);
 
 	if (iov_iter_is_pipe(i)) {
 		unsigned int p_mask = i->pipe->ring_size - 1;
@@ -2124,8 +2145,8 @@ EXPORT_SYMBOL(import_single_range);
  */
 void iov_iter_restore(struct iov_iter *i, struct iov_iter_state *state)
 {
-	if (WARN_ON_ONCE(!iov_iter_is_bvec(i) && !iter_is_iovec(i)) &&
-			 !iov_iter_is_kvec(i))
+	if (WARN_ON_ONCE(!iov_iter_is_bvec(i) && !iter_is_iovec(i) &&
+			 !iov_iter_is_dma_tag(i)) && !iov_iter_is_kvec(i))
 		return;
 	i->iov_offset = state->iov_offset;
 	i->count = state->count;
@@ -2141,7 +2162,7 @@ void iov_iter_restore(struct iov_iter *i, struct iov_iter_state *state)
 	BUILD_BUG_ON(sizeof(struct iovec) != sizeof(struct kvec));
 	if (iov_iter_is_bvec(i))
 		i->bvec -= state->nr_segs - i->nr_segs;
-	else
+	else if (!iov_iter_is_dma_tag(i))
 		i->iov -= state->nr_segs - i->nr_segs;
 	i->nr_segs = state->nr_segs;
 }
