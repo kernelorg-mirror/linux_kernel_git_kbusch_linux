@@ -2232,18 +2232,25 @@ static int io_init_req(struct io_ring_ctx *ctx, struct io_kiocb *req,
 		return -EINVAL;
 
 	if (def->needs_file) {
-		struct io_submit_state *state = &ctx->submit_state;
-
 		req->cqe.fd = READ_ONCE(sqe->fd);
 
 		/*
 		 * Plug now if we have more than 2 IO left after this, and the
 		 * target is potentially a read/write to block based storage.
 		 */
-		if (state->need_plug && def->plug) {
-			state->plug_started = true;
-			state->need_plug = false;
-			blk_start_plug_nr_ios(&state->plug, state->submit_nr);
+		if (def->plug) {
+			struct io_submit_state *state = &ctx->submit_state;
+
+			if (state->need_plug) {
+				state->plug_started = true;
+				state->need_plug = false;
+				state->fd = req->cqe.fd;
+				blk_start_plug(&state->plug);
+			} else if (state->plug_started &&
+				   state->fd == req->cqe.fd &&
+				   !state->link.head) {
+				state->plug.nr_ios++;
+			}
 		}
 	}
 

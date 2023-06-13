@@ -175,6 +175,7 @@ struct io_submit_state {
 	bool			need_plug;
 	unsigned short		submit_nr;
 	unsigned int		cqes_count;
+	int			fd;
 	struct blk_plug		plug;
 	struct io_uring_cqe	cqes[16];
 };

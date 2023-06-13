@@ -521,7 +521,8 @@ static struct request *blk_mq_rq_cache_fill(struct request_queue *q,
 		.q		= q,
 		.flags		= flags,
 		.cmd_flags	= opf,
-		.nr_tags	= plug->nr_ios,
+		.nr_tags	= min_t(unsigned int, plug->nr_ios,
+					BLK_MAX_REQUEST_COUNT),
 		.cached_rq	= &plug->cached_rq,
 	};
 	struct request *rq;
@@ -2852,7 +2853,8 @@ static struct request *blk_mq_get_new_requests(struct request_queue *q,
 	rq_qos_throttle(q, bio);
 
 	if (plug) {
-		data.nr_tags = plug->nr_ios;
+		data.nr_tags = min_t(unsigned int, plug->nr_ios,
+				     BLK_MAX_REQUEST_COUNT);
 		plug->nr_ios = 1;
 		data.cached_rq = &plug->cached_rq;
 	}
