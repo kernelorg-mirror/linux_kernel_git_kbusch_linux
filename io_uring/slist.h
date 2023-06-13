@@ -12,6 +12,10 @@
 #define wq_list_for_each_resume(pos, prv)			\
 	for (; pos; prv = pos, pos = (pos)->next)
 
+#define wq_list_for_each_safe(pos, n, head)			\
+	for (pos = (head)->first, n = pos ? pos->next : NULL;	\
+	     pos; pos = next, next = pos ? pos->next : NULL)
+
 #define wq_list_empty(list)	(READ_ONCE((list)->first) == NULL)
 
 #define INIT_WQ_LIST(list)	do {				\

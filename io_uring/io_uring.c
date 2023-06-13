@@ -1051,6 +1051,7 @@ static void io_preinit_req(struct io_kiocb *req, struct io_ring_ctx *ctx)
 	req->ctx = ctx;
 	req->link = NULL;
 	req->async_data = NULL;
+	req->comp_list.next = NULL;
 	/* not necessary, but safer to zero */
 	req->cqe.res = 0;
 }
@@ -2430,8 +2431,11 @@ static bool io_get_sqe(struct io_ring_ctx *ctx, const struct io_uring_sqe **sqe)
 int io_submit_sqes(struct io_ring_ctx *ctx, unsigned int nr)
 	__must_hold(&ctx->uring_lock)
 {
+	struct io_wq_work_node *pos, *next;
 	struct io_submit_link *link = &ctx->submit_state.link;
 	unsigned int entries = io_sqring_entries(ctx);
+	struct io_wq_work_list req_list;
+	struct io_kiocb *req;
 	unsigned int left;
 	int ret, err;
 
@@ -2442,6 +2446,7 @@ int io_submit_sqes(struct io_ring_ctx *ctx, unsigned int nr)
 	io_get_task_refs(left);
 	io_submit_state_start(&ctx->submit_state, left);
 
+	INIT_WQ_LIST(&req_list);
 	do {
 		const struct io_uring_sqe *sqe;
 		struct io_kiocb *req;
@@ -2462,7 +2467,7 @@ int io_submit_sqes(struct io_ring_ctx *ctx, unsigned int nr)
 			goto error;
 
 		if (likely(req))
-			io_submit_sqe(req);
+			wq_list_add_tail(&req->comp_list, &req_list);
 		continue;
 error:
 		/*
@@ -2475,6 +2480,12 @@ error:
 			break;
 		}
 	} while (--left);
+
+	wq_list_for_each_safe(pos, next, &req_list) {
+		req = container_of(pos, struct io_kiocb, comp_list);
+		req->comp_list.next = NULL;
+		io_submit_sqe(req);
+	}
 
 	if (unlikely(left)) {
 		ret -= left;
