@@ -2302,18 +2302,20 @@ static __cold int io_submit_fail_init(const struct io_uring_sqe *sqe,
 	return 0;
 }
 
-static inline int io_submit_sqe(struct io_ring_ctx *ctx, struct io_kiocb *req,
-			 const struct io_uring_sqe *sqe)
-	__must_hold(&ctx->uring_lock)
+static inline void io_submit_sqe(struct io_kiocb *req)
 {
-	struct io_submit_link *link = &ctx->submit_state.link;
-	int ret;
-
-	ret = io_init_req(ctx, req, sqe);
-	if (unlikely(ret))
-		return io_submit_fail_init(sqe, req, ret);
-
 	trace_io_uring_submit_req(req);
+
+	if (unlikely(req->flags & (REQ_F_FORCE_ASYNC | REQ_F_FAIL)))
+		io_queue_sqe_fallback(req);
+	else
+		io_queue_sqe(req);
+}
+
+static int io_setup_link(struct io_submit_link *link, struct io_kiocb **orig)
+{
+	struct io_kiocb *req = *orig;
+	int ret;
 
 	/*
 	 * If we already have a head request, queue this one for async
@@ -2323,35 +2325,28 @@ static inline int io_submit_sqe(struct io_ring_ctx *ctx, struct io_kiocb *req,
 	 * conditions are true (normal request), then just queue it.
 	 */
 	if (unlikely(link->head)) {
+		*orig = NULL;
+
 		ret = io_req_prep_async(req);
 		if (unlikely(ret))
-			return io_submit_fail_init(sqe, req, ret);
+			return ret;
 
 		trace_io_uring_link(req, link->head);
 		link->last->link = req;
 		link->last = req;
-
 		if (req->flags & IO_REQ_LINK_FLAGS)
 			return 0;
-		/* last request of the link, flush it */
-		req = link->head;
-		link->head = NULL;
-		if (req->flags & (REQ_F_FORCE_ASYNC | REQ_F_FAIL))
-			goto fallback;
 
-	} else if (unlikely(req->flags & (IO_REQ_LINK_FLAGS |
-					  REQ_F_FORCE_ASYNC | REQ_F_FAIL))) {
-		if (req->flags & IO_REQ_LINK_FLAGS) {
-			link->head = req;
-			link->last = req;
-		} else {
-fallback:
-			io_queue_sqe_fallback(req);
-		}
-		return 0;
+		/* last request of the link, flush it */
+		*orig = link->head;
+		link->head = NULL;
+	} else if (unlikely(req->flags & IO_REQ_LINK_FLAGS)) {
+	        link->head = req;
+	        link->last = req;
+		*orig = NULL;
+	        return 0;
 	}
 
-	io_queue_sqe(req);
 	return 0;
 }
 
@@ -2435,9 +2430,10 @@ static bool io_get_sqe(struct io_ring_ctx *ctx, const struct io_uring_sqe **sqe)
 int io_submit_sqes(struct io_ring_ctx *ctx, unsigned int nr)
 	__must_hold(&ctx->uring_lock)
 {
+	struct io_submit_link *link = &ctx->submit_state.link;
 	unsigned int entries = io_sqring_entries(ctx);
 	unsigned int left;
-	int ret;
+	int ret, err;
 
 	if (unlikely(!entries))
 		return 0;
@@ -2457,12 +2453,24 @@ int io_submit_sqes(struct io_ring_ctx *ctx, unsigned int nr)
 			break;
 		}
 
+		err = io_init_req(ctx, req, sqe);
+		if (unlikely(err))
+			goto error;
+
+		err = io_setup_link(link, &req);
+		if (unlikely(err))
+			goto error;
+
+		if (likely(req))
+			io_submit_sqe(req);
+		continue;
+error:
 		/*
 		 * Continue submitting even for sqe failure if the
 		 * ring was setup with IORING_SETUP_SUBMIT_ALL
 		 */
-		if (unlikely(io_submit_sqe(ctx, req, sqe)) &&
-		    !(ctx->flags & IORING_SETUP_SUBMIT_ALL)) {
+		err = io_submit_fail_init(sqe, req, err);
+		if (err && !(ctx->flags & IORING_SETUP_SUBMIT_ALL)) {
 			left--;
 			break;
 		}
