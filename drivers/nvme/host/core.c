@@ -1990,6 +1990,9 @@ static void nvme_set_ctrl_limits(struct nvme_ctrl *ctrl,
 	lim->max_segments = min_t(u32, USHRT_MAX,
 		min_not_zero(nvme_max_drv_segments(ctrl), ctrl->max_segments));
 	lim->max_integrity_segments = ctrl->max_integrity_segments;
+	if (lim->max_integrity_segments > 1 &&
+	    !nvme_ctrl_meta_sgl_supported(ctrl))
+		lim->max_integrity_segments = 1;
 	lim->virt_boundary_mask = NVME_CTRL_PAGE_SIZE - 1;
 	lim->max_segment_size = UINT_MAX;
 	lim->dma_alignment = 3;
