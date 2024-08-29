@@ -116,6 +116,7 @@ static int nvme_map_user_request(struct request *req, u64 ubuffer,
 		unsigned bufflen, void __user *meta_buffer, unsigned meta_len,
 		u32 meta_seed, struct io_uring_cmd *ioucmd, unsigned int flags)
 {
+	struct nvme_ctrl *ctrl = nvme_req(req)->ctrl;
 	struct request_queue *q = req->q;
 	struct nvme_ns *ns = q->queuedata;
 	struct block_device *bdev = ns ? ns->disk->part0 : NULL;
@@ -126,6 +127,15 @@ static int nvme_map_user_request(struct request *req, u64 ubuffer,
 
 	if (has_metadata && !supports_metadata)
 		return -EINVAL;
+
+	if (bdev) {
+		if (nvme_ctrl_sgl_supported(ctrl)) {
+			nvme_req(req)->flags |= NVME_REQ_USE_SGLS;
+		} else {
+			dev_warn_once(ctrl->device, "using unchecked buffer\n");
+			add_taint(TAINT_USER, LOCKDEP_STILL_OK);
+		}
+	}
 
 	if (ioucmd && (ioucmd->flags & IORING_URING_CMD_FIXED)) {
 		struct iov_iter iter;
@@ -152,6 +162,13 @@ static int nvme_map_user_request(struct request *req, u64 ubuffer,
 		bio_set_dev(bio, bdev);
 
 	if (has_metadata) {
+		if (nvme_ctrl_meta_sgl_supported(ctrl)) {
+			nvme_req(req)->flags |= NVME_REQ_USE_META_SGLS;
+		} else {
+			dev_warn_once(ctrl->device,
+				      "using unchecked meta buffer\n");
+			add_taint(TAINT_USER, LOCKDEP_STILL_OK);
+		}
 		ret = blk_rq_integrity_map_user(req, meta_buffer,
 						meta_len, meta_seed);
 		if (ret)

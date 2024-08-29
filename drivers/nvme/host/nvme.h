@@ -197,6 +197,8 @@ enum {
 	NVME_REQ_USERCMD		= (1 << 1),
 	NVME_MPATH_IO_STATS		= (1 << 2),
 	NVME_MPATH_CNT_ACTIVE		= (1 << 3),
+	NVME_REQ_USE_SGLS		= (1 << 4),
+	NVME_REQ_USE_META_SGLS		= (1 << 5),
 };
 
 static inline struct nvme_request *nvme_req(struct request *req)

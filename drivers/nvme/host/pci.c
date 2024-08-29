@@ -523,7 +523,8 @@ static inline bool nvme_pci_sgl_capable(struct nvme_dev *dev,
 
 static inline bool nvme_pci_metadata_use_sgls(struct request *req)
 {
-	return blk_rq_integrity_segments(req) > 1;
+	return blk_rq_integrity_segments(req) > 1 ||
+		nvme_req(req)->flags & NVME_REQ_USE_META_SGLS;
 }
 
 static inline bool nvme_pci_use_sgls(struct nvme_dev *dev, struct request *req,
@@ -537,13 +538,19 @@ static inline bool nvme_pci_use_sgls(struct nvme_dev *dev, struct request *req,
 		return false;
 	if (nvme_pci_metadata_use_sgls(req))
 		return true;
-	return avg_seg_size >= sgl_threshold;
+	if (avg_seg_size < sgl_threshold)
+		return nvme_req(req)->flags & NVME_REQ_USE_SGLS;
+	return true;
 }
 
-static inline bool nvme_pci_use_prps(struct bio_vec *bv)
+static inline bool nvme_pci_use_prps(struct request *req, struct bio_vec *bv)
 {
-	unsigned int off = bv->bv_offset & (NVME_CTRL_PAGE_SIZE - 1);
+	unsigned int off;
 
+	if (nvme_pci_metadata_use_sgls(req))
+		return false;
+
+	off = bv->bv_offset & (NVME_CTRL_PAGE_SIZE - 1);
 	return off + bv->bv_len <= NVME_CTRL_PAGE_SIZE * 2;
 }
 
@@ -837,7 +844,7 @@ static blk_status_t nvme_map_data(struct nvme_dev *dev, struct request *req)
 		struct bio_vec bv = req_bvec(req);
 
 		if (!is_pci_p2pdma_page(bv.bv_page)) {
-			if (nvme_pci_use_prps(&bv))
+			if (nvme_pci_use_prps(req, &bv))
 				return nvme_setup_prp_simple(dev, req, &bv);
 			if (nvme_pci_sgl_capable(dev, req))
 				return nvme_setup_sgl_simple(dev, req, &bv);
