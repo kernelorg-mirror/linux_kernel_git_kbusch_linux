@@ -27,7 +27,7 @@ static inline bool queue_limits_stack_integrity_bdev(struct queue_limits *t,
 #ifdef CONFIG_BLK_DEV_INTEGRITY
 int blk_rq_map_integrity_sg(struct request_queue *, struct bio *,
 				   struct scatterlist *);
-int blk_rq_count_integrity_sg(struct request_queue *, struct bio *);
+int blk_rq_count_integrity_segs(struct bio *);
 int blk_rq_integrity_map_user(struct request *rq, void __user *ubuf,
 			      ssize_t bytes, u32 seed);
 
@@ -93,8 +93,7 @@ static inline struct bio_vec rq_integrity_vec(struct request *rq)
 				 rq->bio->bi_integrity->bip_iter);
 }
 #else /* CONFIG_BLK_DEV_INTEGRITY */
-static inline int blk_rq_count_integrity_sg(struct request_queue *q,
-					    struct bio *b)
+static inline int blk_rq_count_integrity_segs(struct bio *b)
 {
 	return 0;
 }

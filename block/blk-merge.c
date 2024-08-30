@@ -641,8 +641,7 @@ static inline int ll_new_hw_segment(struct request *req, struct bio *bio,
 	req->nr_phys_segments += nr_phys_segs;
 #if defined(CONFIG_BLK_DEV_INTEGRITY)
 	if (bio->bi_opf & REQ_INTEGRITY)
-		req->nr_integrity_segments += blk_rq_count_integrity_sg(req->q,
-									bio);
+		req->nr_integrity_segments += blk_rq_count_integrity_segs(bio);
 #endif
 	return 1;
 
