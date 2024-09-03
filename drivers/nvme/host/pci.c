@@ -504,21 +504,28 @@ static void nvme_commit_rqs(struct blk_mq_hw_ctx *hctx)
 	spin_unlock(&nvmeq->sq_lock);
 }
 
-static inline bool nvme_pci_use_sgls(struct nvme_dev *dev, struct request *req,
-				     int nseg)
+static inline bool nvme_pci_sgl_capable(struct nvme_dev *dev,
+					struct request *req)
 {
 	struct nvme_queue *nvmeq = req->mq_hctx->driver_data;
-	unsigned int avg_seg_size;
-
-	avg_seg_size = DIV_ROUND_UP(blk_rq_payload_bytes(req), nseg);
 
 	if (!nvme_ctrl_sgl_supported(&dev->ctrl))
 		return false;
 	if (!nvmeq->qid)
 		return false;
-	if (!sgl_threshold || avg_seg_size < sgl_threshold)
+	return sgl_threshold;
+}
+
+static inline bool nvme_pci_use_sgls(struct nvme_dev *dev, struct request *req,
+				     int nseg)
+{
+	unsigned int avg_seg_size;
+
+	avg_seg_size = DIV_ROUND_UP(blk_rq_payload_bytes(req), nseg);
+
+	if (!nvme_pci_sgl_capable(dev, req))
 		return false;
-	return true;
+	return avg_seg_size >= sgl_threshold;
 }
 
 static void nvme_free_prps(struct nvme_dev *dev, struct request *req)
@@ -774,7 +781,6 @@ static blk_status_t nvme_map_data(struct nvme_dev *dev, struct request *req,
 	int rc;
 
 	if (blk_rq_nr_phys_segments(req) == 1) {
-		struct nvme_queue *nvmeq = req->mq_hctx->driver_data;
 		struct bio_vec bv = req_bvec(req);
 
 		if (!is_pci_p2pdma_page(bv.bv_page)) {
@@ -783,8 +789,7 @@ static blk_status_t nvme_map_data(struct nvme_dev *dev, struct request *req,
 				return nvme_setup_prp_simple(dev, req,
 							     &cmnd->rw, &bv);
 
-			if (nvmeq->qid && sgl_threshold &&
-			    nvme_ctrl_sgl_supported(&dev->ctrl))
+			if (nvme_pci_sgl_capable(dev, req))
 				return nvme_setup_sgl_simple(dev, req,
 							     &cmnd->rw, &bv);
 		}
