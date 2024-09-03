@@ -780,26 +780,12 @@ static blk_status_t nvme_setup_sgl_simple(struct nvme_dev *dev,
 	return BLK_STS_OK;
 }
 
-static blk_status_t nvme_map_data(struct nvme_dev *dev, struct request *req,
+static blk_status_t __nvme_map_data(struct nvme_dev *dev, struct request *req,
 		struct nvme_command *cmnd)
 {
 	struct nvme_iod *iod = blk_mq_rq_to_pdu(req);
 	blk_status_t ret = BLK_STS_RESOURCE;
 	int rc;
-
-	if (blk_rq_nr_phys_segments(req) == 1) {
-		struct bio_vec bv = req_bvec(req);
-
-		if (!is_pci_p2pdma_page(bv.bv_page)) {
-			if (nvme_pci_use_prps(&bv))
-				return nvme_setup_prp_simple(dev, req,
-							     &cmnd->rw, &bv);
-
-			if (nvme_pci_sgl_capable(dev, req))
-				return nvme_setup_sgl_simple(dev, req,
-							     &cmnd->rw, &bv);
-		}
-	}
 
 	iod->dma_len = 0;
 	iod->sgt.sgl = mempool_alloc(dev->iod_mempool, GFP_ATOMIC);
@@ -831,6 +817,25 @@ out_unmap_sg:
 out_free_sg:
 	mempool_free(iod->sgt.sgl, dev->iod_mempool);
 	return ret;
+}
+
+static blk_status_t nvme_map_data(struct nvme_dev *dev, struct request *req,
+		struct nvme_command *cmnd)
+{
+	if (blk_rq_nr_phys_segments(req) == 1) {
+		struct bio_vec bv = req_bvec(req);
+
+		if (!is_pci_p2pdma_page(bv.bv_page)) {
+			if (nvme_pci_use_prps(&bv))
+				return nvme_setup_prp_simple(dev, req,
+							     &cmnd->rw, &bv);
+			if (nvme_pci_sgl_capable(dev, req))
+				return nvme_setup_sgl_simple(dev, req,
+							     &cmnd->rw, &bv);
+		}
+	}
+
+	return __nvme_map_data(dev, req, cmnd);
 }
 
 static blk_status_t nvme_map_metadata(struct nvme_dev *dev, struct request *req,
