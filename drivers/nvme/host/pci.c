@@ -588,9 +588,10 @@ static void nvme_print_sgl(struct scatterlist *sgl, int nents)
 }
 
 static blk_status_t nvme_pci_setup_prps(struct nvme_dev *dev,
-		struct request *req, struct nvme_rw_command *cmnd)
+		struct request *req)
 {
 	struct nvme_iod *iod = blk_mq_rq_to_pdu(req);
+	struct nvme_rw_command *cmnd = &iod->cmd.rw;
 	struct dma_pool *pool;
 	int length = blk_rq_payload_bytes(req);
 	struct scatterlist *sg = iod->sgt.sgl;
@@ -694,9 +695,10 @@ static void nvme_pci_sgl_set_seg(struct nvme_sgl_desc *sge,
 }
 
 static blk_status_t nvme_pci_setup_sgls(struct nvme_dev *dev,
-		struct request *req, struct nvme_rw_command *cmd)
+		struct request *req)
 {
 	struct nvme_iod *iod = blk_mq_rq_to_pdu(req);
+	struct nvme_rw_command *cmd = &iod->cmd.rw;
 	struct dma_pool *pool;
 	struct nvme_sgl_desc *sg_list;
 	struct scatterlist *sg = iod->sgt.sgl;
@@ -739,12 +741,12 @@ static blk_status_t nvme_pci_setup_sgls(struct nvme_dev *dev,
 }
 
 static blk_status_t nvme_setup_prp_simple(struct nvme_dev *dev,
-		struct request *req, struct nvme_rw_command *cmnd,
-		struct bio_vec *bv)
+		struct request *req, struct bio_vec *bv)
 {
-	struct nvme_iod *iod = blk_mq_rq_to_pdu(req);
 	unsigned int offset = bv->bv_offset & (NVME_CTRL_PAGE_SIZE - 1);
 	unsigned int first_prp_len = NVME_CTRL_PAGE_SIZE - offset;
+	struct nvme_iod *iod = blk_mq_rq_to_pdu(req);
+	struct nvme_rw_command *cmnd = &iod->cmd.rw;
 
 	iod->first_dma = dma_map_bvec(dev->dev, bv, rq_dma_dir(req), 0);
 	if (dma_mapping_error(dev->dev, iod->first_dma))
@@ -759,10 +761,10 @@ static blk_status_t nvme_setup_prp_simple(struct nvme_dev *dev,
 }
 
 static blk_status_t nvme_setup_sgl_simple(struct nvme_dev *dev,
-		struct request *req, struct nvme_rw_command *cmnd,
-		struct bio_vec *bv)
+		struct request *req, struct bio_vec *bv)
 {
 	struct nvme_iod *iod = blk_mq_rq_to_pdu(req);
+	struct nvme_rw_command *cmnd = &iod->cmd.rw;
 
 	iod->first_dma = dma_map_bvec(dev->dev, bv, rq_dma_dir(req), 0);
 	if (dma_mapping_error(dev->dev, iod->first_dma))
@@ -775,8 +777,7 @@ static blk_status_t nvme_setup_sgl_simple(struct nvme_dev *dev,
 	return BLK_STS_OK;
 }
 
-static blk_status_t __nvme_map_data(struct nvme_dev *dev, struct request *req,
-		struct nvme_command *cmnd)
+static blk_status_t __nvme_map_data(struct nvme_dev *dev, struct request *req)
 {
 	struct nvme_iod *iod = blk_mq_rq_to_pdu(req);
 	blk_status_t ret = BLK_STS_RESOURCE;
@@ -799,9 +800,9 @@ static blk_status_t __nvme_map_data(struct nvme_dev *dev, struct request *req,
 	}
 
 	if (nvme_pci_use_sgls(dev, req, iod->sgt.nents))
-		ret = nvme_pci_setup_sgls(dev, req, &cmnd->rw);
+		ret = nvme_pci_setup_sgls(dev, req);
 	else
-		ret = nvme_pci_setup_prps(dev, req, &cmnd->rw);
+		ret = nvme_pci_setup_prps(dev, req);
 	if (ret != BLK_STS_OK)
 		goto out_unmap_sg;
 	return BLK_STS_OK;
@@ -813,23 +814,20 @@ out_free_sg:
 	return ret;
 }
 
-static blk_status_t nvme_map_data(struct nvme_dev *dev, struct request *req,
-		struct nvme_command *cmnd)
+static blk_status_t nvme_map_data(struct nvme_dev *dev, struct request *req)
 {
 	if (blk_rq_nr_phys_segments(req) == 1) {
 		struct bio_vec bv = req_bvec(req);
 
 		if (!is_pci_p2pdma_page(bv.bv_page)) {
 			if (nvme_pci_use_prps(&bv))
-				return nvme_setup_prp_simple(dev, req,
-							     &cmnd->rw, &bv);
+				return nvme_setup_prp_simple(dev, req, &bv);
 			if (nvme_pci_sgl_capable(dev, req))
-				return nvme_setup_sgl_simple(dev, req,
-							     &cmnd->rw, &bv);
+				return nvme_setup_sgl_simple(dev, req, &bv);
 		}
 	}
 
-	return __nvme_map_data(dev, req, cmnd);
+	return __nvme_map_data(dev, req);
 }
 
 static blk_status_t nvme_map_metadata(struct nvme_dev *dev, struct request *req,
@@ -859,7 +857,7 @@ static blk_status_t nvme_prep_rq(struct nvme_dev *dev, struct request *req)
 		return ret;
 
 	if (blk_rq_nr_phys_segments(req)) {
-		ret = nvme_map_data(dev, req, &iod->cmd);
+		ret = nvme_map_data(dev, req);
 		if (ret)
 			goto out_free_cmd;
 	}
