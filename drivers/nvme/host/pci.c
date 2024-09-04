@@ -707,15 +707,26 @@ static void nvme_pci_sgl_set_seg(struct nvme_sgl_desc *sge,
 	sge->type = NVME_SGL_FMT_LAST_SEG_DESC << 4;
 }
 
+static void nvme_pci_sgl_set_list(struct nvme_sgl_desc *sg_list,
+				  struct nvme_sgl_desc *seg,
+				  struct scatterlist *sgl, int nents,
+				  dma_addr_t dma)
+{
+	struct scatterlist *sg;
+	int i;
+
+	nvme_pci_sgl_set_seg(seg, dma, nents);
+	for_each_sg(sgl, sg, nents, i)
+		nvme_pci_sgl_set_data(&sg_list[i], sg);
+}
+
 static blk_status_t nvme_pci_setup_sgls(struct nvme_dev *dev,
 		struct request *req)
 {
 	struct nvme_iod *iod = blk_mq_rq_to_pdu(req);
-	struct nvme_sgl_desc *sg_list;
 	struct nvme_rw_command *cmd = &iod->cmd.rw;
 	struct scatterlist *sg = iod->sgt.sgl;
 	unsigned int entries = iod->sgt.nents;
-	int i = 0;
 
 	/* setting the transfer type as SGL */
 	cmd->flags = NVME_CMD_SGL_METABUF;
@@ -729,13 +740,8 @@ static blk_status_t nvme_pci_setup_sgls(struct nvme_dev *dev,
 				 iod))
 		return BLK_STS_RESOURCE;
 
-	sg_list = iod->list[0].sg_list;
-	nvme_pci_sgl_set_seg(&cmd->dptr.sgl, iod->first_dma, entries);
-	do {
-		nvme_pci_sgl_set_data(&sg_list[i++], sg);
-		sg = sg_next(sg);
-	} while (--entries > 0);
-
+	nvme_pci_sgl_set_list(iod->list[0].sg_list, &cmd->dptr.sgl, sg, entries,
+			      iod->first_dma);
 	return BLK_STS_OK;
 }
 
