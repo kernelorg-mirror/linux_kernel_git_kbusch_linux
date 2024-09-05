@@ -211,8 +211,7 @@ static void virtblk_unmap_data(struct request *req, struct virtblk_req *vbr)
 				      VIRTIO_BLK_INLINE_SG_CNT);
 }
 
-static int virtblk_map_data(struct blk_mq_hw_ctx *hctx, struct request *req,
-		struct virtblk_req *vbr)
+static int virtblk_map_data(struct request *req, struct virtblk_req *vbr)
 {
 	int err;
 
@@ -227,7 +226,7 @@ static int virtblk_map_data(struct blk_mq_hw_ctx *hctx, struct request *req,
 	if (unlikely(err))
 		return -ENOMEM;
 
-	return blk_rq_map_sg(hctx->queue, req, vbr->sg_table.sgl);
+	return blk_rq_map_sg(req, vbr->sg_table.sgl);
 }
 
 static void virtblk_cleanup_cmd(struct request *req)
@@ -402,8 +401,7 @@ static blk_status_t virtblk_fail_to_queue(struct request *req, int rc)
 	}
 }
 
-static blk_status_t virtblk_prep_rq(struct blk_mq_hw_ctx *hctx,
-					struct virtio_blk *vblk,
+static blk_status_t virtblk_prep_rq(struct virtio_blk *vblk,
 					struct request *req,
 					struct virtblk_req *vbr)
 {
@@ -414,7 +412,7 @@ static blk_status_t virtblk_prep_rq(struct blk_mq_hw_ctx *hctx,
 	if (unlikely(status))
 		return status;
 
-	num = virtblk_map_data(hctx, req, vbr);
+	num = virtblk_map_data(req, vbr);
 	if (unlikely(num < 0))
 		return virtblk_fail_to_queue(req, -ENOMEM);
 	vbr->sg_table.nents = num;
@@ -436,7 +434,7 @@ static blk_status_t virtio_queue_rq(struct blk_mq_hw_ctx *hctx,
 	blk_status_t status;
 	int err;
 
-	status = virtblk_prep_rq(hctx, vblk, req, vbr);
+	status = virtblk_prep_rq(vblk, req, vbr);
 	if (unlikely(status))
 		return status;
 
@@ -468,7 +466,7 @@ static bool virtblk_prep_rq_batch(struct request *req)
 	struct virtio_blk *vblk = req->mq_hctx->queue->queuedata;
 	struct virtblk_req *vbr = blk_mq_rq_to_pdu(req);
 
-	return virtblk_prep_rq(req->mq_hctx, vblk, req, vbr) == BLK_STS_OK;
+	return virtblk_prep_rq(vblk, req, vbr) == BLK_STS_OK;
 }
 
 static bool virtblk_add_req_batch(struct virtio_blk_vq *vq,

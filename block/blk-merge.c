@@ -573,15 +573,15 @@ static int __blk_bios_map_sg(struct request_queue *q, struct bio *bio,
  * map a request to scatterlist, return number of sg entries setup. Caller
  * must make sure sg can hold rq->nr_phys_segments entries
  */
-int __blk_rq_map_sg(struct request_queue *q, struct request *rq,
-		struct scatterlist *sglist, struct scatterlist **last_sg)
+int __blk_rq_map_sg(struct request *rq, struct scatterlist *sglist,
+		    struct scatterlist **last_sg)
 {
 	int nsegs = 0;
 
 	if (rq->rq_flags & RQF_SPECIAL_PAYLOAD)
 		nsegs = __blk_bvec_map_sg(rq->special_vec, sglist, last_sg);
 	else if (rq->bio)
-		nsegs = __blk_bios_map_sg(q, rq->bio, sglist, last_sg);
+		nsegs = __blk_bios_map_sg(rq->q, rq->bio, sglist, last_sg);
 
 	if (*last_sg)
 		sg_mark_end(*last_sg);
