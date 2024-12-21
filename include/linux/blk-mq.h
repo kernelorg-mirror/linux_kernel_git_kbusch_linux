@@ -1125,7 +1125,7 @@ void blk_abort_request(struct request *);
  * own special payload.  In that case we still return 1 here so that this
  * special payload will be mapped.
  */
-static inline unsigned short blk_rq_nr_phys_segments(struct request *rq)
+static inline unsigned short blk_rq_nr_phys_segments(const struct request *rq)
 {
 	if (rq->rq_flags & RQF_SPECIAL_PAYLOAD)
 		return 1;
