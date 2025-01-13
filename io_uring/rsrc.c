@@ -117,23 +117,39 @@ static void io_buffer_unmap(struct io_ring_ctx *ctx, struct io_rsrc_node *node)
 				unpin_user_page(imu->bvec[i].bv_page);
 		if (imu->acct_pages)
 			io_unaccount_mem(ctx, imu->acct_pages);
-		kvfree(imu);
+		if (struct_size(imu, bvec, imu->nr_bvecs) >
+				ctx->buf_table.imu_cache.elem_size ||
+		    !io_alloc_cache_put(&ctx->buf_table.imu_cache, imu))
+			kvfree(imu);
 	}
 }
 
-struct io_rsrc_node *io_rsrc_node_alloc(int type)
+struct io_rsrc_node *io_rsrc_node_alloc(struct io_ring_ctx *ctx, int type)
 {
 	struct io_rsrc_node *node;
 
-	node = kzalloc(sizeof(*node), GFP_KERNEL);
+	if (type == IORING_RSRC_FILE)
+		node = kmalloc(sizeof(*node), GFP_KERNEL);
+	else
+		node = io_cache_alloc(&ctx->buf_table.node_cache, GFP_KERNEL, NULL);
 	if (node) {
 		node->type = type;
 		node->refs = 1;
+		node->tag = 0;
+		node->file_ptr = 0;
 	}
 	return node;
 }
 
-__cold void io_rsrc_data_free(struct io_ring_ctx *ctx, struct io_rsrc_data *data)
+static __cold void __io_rsrc_data_free(struct io_rsrc_data *data)
+{
+	kvfree(data->nodes);
+	data->nodes = NULL;
+	data->nr = 0;
+}
+
+__cold void io_rsrc_data_free(struct io_ring_ctx *ctx,
+			      struct io_rsrc_data *data)
 {
 	if (!data->nr)
 		return;
@@ -141,9 +157,7 @@ __cold void io_rsrc_data_free(struct io_ring_ctx *ctx, struct io_rsrc_data *data
 		if (data->nodes[data->nr])
 			io_put_rsrc_node(ctx, data->nodes[data->nr]);
 	}
-	kvfree(data->nodes);
-	data->nodes = NULL;
-	data->nr = 0;
+	__io_rsrc_data_free(data);
 }
 
 __cold int io_rsrc_data_alloc(struct io_rsrc_data *data, unsigned nr)
@@ -155,6 +169,31 @@ __cold int io_rsrc_data_alloc(struct io_rsrc_data *data, unsigned nr)
 		return 0;
 	}
 	return -ENOMEM;
+}
+
+static __cold int io_rsrc_buffer_alloc(struct io_buf_table *table, unsigned nr)
+{
+	int ret;
+
+	ret = io_rsrc_data_alloc(&table->data, nr);
+	if (ret)
+		return ret;
+
+	ret = io_alloc_cache_init(&table->node_cache, nr,
+				  sizeof(struct io_rsrc_node));
+	if (ret)
+		goto out_1;
+
+	ret = io_alloc_cache_init(&table->imu_cache, nr, 512);
+	if (ret)
+		goto out_2;
+
+	return 0;
+out_2:
+	io_alloc_cache_free(&table->node_cache, kfree);
+out_1:
+	__io_rsrc_data_free(&table->data);
+	return ret;
 }
 
 static int __io_sqe_files_update(struct io_ring_ctx *ctx,
@@ -206,7 +245,7 @@ static int __io_sqe_files_update(struct io_ring_ctx *ctx,
 				err = -EBADF;
 				break;
 			}
-			node = io_rsrc_node_alloc(IORING_RSRC_FILE);
+			node = io_rsrc_node_alloc(ctx, IORING_RSRC_FILE);
 			if (!node) {
 				err = -ENOMEM;
 				fput(file);
@@ -466,6 +505,8 @@ void io_free_rsrc_node(struct io_ring_ctx *ctx, struct io_rsrc_node *node)
 	case IORING_RSRC_KBUF:
 		if (node->buf)
 			io_buffer_unmap(ctx, node);
+		if (io_alloc_cache_put(&ctx->buf_table.node_cache, node))
+			return;
 		break;
 	default:
 		WARN_ON_ONCE(1);
@@ -534,7 +575,7 @@ int io_sqe_files_register(struct io_ring_ctx *ctx, void __user *arg,
 			goto fail;
 		}
 		ret = -ENOMEM;
-		node = io_rsrc_node_alloc(IORING_RSRC_FILE);
+		node = io_rsrc_node_alloc(ctx, IORING_RSRC_FILE);
 		if (!node) {
 			fput(file);
 			goto fail;
@@ -554,11 +595,19 @@ fail:
 	return ret;
 }
 
+static void io_rsrc_buffer_free(struct io_ring_ctx *ctx,
+				struct io_buf_table *table)
+{
+	io_rsrc_data_free(ctx, &table->data);
+	io_alloc_cache_free(&table->node_cache, kfree);
+	io_alloc_cache_free(&table->imu_cache, kfree);
+}
+
 int io_sqe_buffers_unregister(struct io_ring_ctx *ctx)
 {
 	if (!ctx->buf_table.data.nr)
 		return -ENXIO;
-	io_rsrc_data_free(ctx, &ctx->buf_table.data);
+	io_rsrc_buffer_free(ctx, &ctx->buf_table);
 	return 0;
 }
 
@@ -739,7 +788,7 @@ static struct io_rsrc_node *io_sqe_buffer_register(struct io_ring_ctx *ctx,
 	if (!iov->iov_base)
 		return NULL;
 
-	node = io_rsrc_node_alloc(IORING_RSRC_BUFFER);
+	node = io_rsrc_node_alloc(ctx, IORING_RSRC_BUFFER);
 	if (!node)
 		return ERR_PTR(-ENOMEM);
 	node->buf = NULL;
@@ -759,7 +808,10 @@ static struct io_rsrc_node *io_sqe_buffer_register(struct io_ring_ctx *ctx,
 			coalesced = io_coalesce_buffer(&pages, &nr_pages, &data);
 	}
 
-	imu = kvmalloc(struct_size(imu, bvec, nr_pages), GFP_KERNEL);
+	if (struct_size(imu, bvec, nr_pages) > ctx->buf_table.imu_cache.elem_size)
+		imu = kvmalloc(struct_size(imu, bvec, nr_pages), GFP_KERNEL);
+	else
+		imu = io_cache_alloc(&ctx->buf_table.imu_cache, GFP_KERNEL, NULL);
 	if (!imu)
 		goto done;
 
@@ -805,9 +857,9 @@ int io_sqe_buffers_register(struct io_ring_ctx *ctx, void __user *arg,
 			    unsigned int nr_args, u64 __user *tags)
 {
 	struct page *last_hpage = NULL;
-	struct io_rsrc_data data;
 	struct iovec fast_iov, *iov = &fast_iov;
 	const struct iovec __user *uvec;
+	struct io_buf_table table;
 	int i, ret;
 
 	BUILD_BUG_ON(IORING_MAX_REG_BUFFERS >= (1u << 16));
@@ -816,13 +868,14 @@ int io_sqe_buffers_register(struct io_ring_ctx *ctx, void __user *arg,
 		return -EBUSY;
 	if (!nr_args || nr_args > IORING_MAX_REG_BUFFERS)
 		return -EINVAL;
-	ret = io_rsrc_data_alloc(&data, nr_args);
+	ret = io_rsrc_buffer_alloc(&table, nr_args);
 	if (ret)
 		return ret;
 
 	if (!arg)
 		memset(iov, 0, sizeof(*iov));
 
+	ctx->buf_table = table;
 	for (i = 0; i < nr_args; i++) {
 		struct io_rsrc_node *node;
 		u64 tag = 0;
@@ -862,10 +915,8 @@ int io_sqe_buffers_register(struct io_ring_ctx *ctx, void __user *arg,
 			}
 			node->tag = tag;
 		}
-		data.nodes[i] = node;
+		table.data.nodes[i] = node;
 	}
-
-	ctx->buf_table.data = data;
 	if (ret)
 		io_sqe_buffers_unregister(ctx);
 	return ret;
@@ -878,11 +929,14 @@ static struct io_rsrc_node *io_buffer_alloc_node(struct io_ring_ctx *ctx,
 	struct io_mapped_ubuf *imu;
 	struct io_rsrc_node *node;
 
-	node = io_rsrc_node_alloc(IORING_RSRC_KBUF);
+	node = io_rsrc_node_alloc(ctx, IORING_RSRC_KBUF);
 	if (!node)
 		return NULL;
 
-	imu = kvmalloc(struct_size(imu, bvec, nr_bvecs), GFP_KERNEL);
+	if (struct_size(imu, bvec, nr_bvecs) > ctx->buf_table.imu_cache.elem_size)
+		imu = kvmalloc(struct_size(imu, bvec, nr_bvecs), GFP_KERNEL);
+	else
+		imu = io_cache_alloc(&ctx->buf_table.imu_cache, GFP_KERNEL, NULL);
 	if (!imu) {
 		io_put_rsrc_node(ctx, node);
 		return NULL;
@@ -1036,7 +1090,7 @@ static void lock_two_rings(struct io_ring_ctx *ctx1, struct io_ring_ctx *ctx2)
 static int io_clone_buffers(struct io_ring_ctx *ctx, struct io_ring_ctx *src_ctx,
 			    struct io_uring_clone_buffers *arg)
 {
-	struct io_rsrc_data data;
+	struct io_buf_table table;
 	int i, ret, off, nr;
 	unsigned int nbufs;
 
@@ -1067,7 +1121,7 @@ static int io_clone_buffers(struct io_ring_ctx *ctx, struct io_ring_ctx *src_ctx
 	if (check_add_overflow(arg->nr, arg->dst_off, &nbufs))
 		return -EOVERFLOW;
 
-	ret = io_rsrc_data_alloc(&data, max(nbufs, ctx->buf_table.data.nr));
+	ret = io_rsrc_buffer_alloc(&table, max(nbufs, ctx->buf_table.data.nr));
 	if (ret)
 		return ret;
 
@@ -1076,7 +1130,7 @@ static int io_clone_buffers(struct io_ring_ctx *ctx, struct io_ring_ctx *src_ctx
 		struct io_rsrc_node *src_node = ctx->buf_table.data.nodes[i];
 
 		if (src_node) {
-			data.nodes[i] = src_node;
+			table.data.nodes[i] = src_node;
 			src_node->refs++;
 		}
 	}
@@ -1106,7 +1160,7 @@ static int io_clone_buffers(struct io_ring_ctx *ctx, struct io_ring_ctx *src_ctx
 		if (!src_node) {
 			dst_node = NULL;
 		} else {
-			dst_node = io_rsrc_node_alloc(IORING_RSRC_BUFFER);
+			dst_node = io_rsrc_node_alloc(ctx, IORING_RSRC_BUFFER);
 			if (!dst_node) {
 				ret = -ENOMEM;
 				goto out_free;
@@ -1115,12 +1169,12 @@ static int io_clone_buffers(struct io_ring_ctx *ctx, struct io_ring_ctx *src_ctx
 			refcount_inc(&src_node->buf->refs);
 			dst_node->buf = src_node->buf;
 		}
-		data.nodes[off++] = dst_node;
+		table.data.nodes[off++] = dst_node;
 		i++;
 	}
 
 	/*
-	 * If asked for replace, put the old table. data->nodes[] holds both
+	 * If asked for replace, put the old table. table.data->nodes[] holds both
 	 * old and new nodes at this point.
 	 */
 	if (arg->flags & IORING_REGISTER_DST_REPLACE)
@@ -1133,10 +1187,10 @@ static int io_clone_buffers(struct io_ring_ctx *ctx, struct io_ring_ctx *src_ctx
 	 * entry).
 	 */
 	WARN_ON_ONCE(ctx->buf_table.data.nr);
-	ctx->buf_table.data = data;
+	ctx->buf_table = table;
 	return 0;
 out_free:
-	io_rsrc_data_free(ctx, &data);
+	io_rsrc_buffer_free(ctx, &table);
 	return ret;
 }
 
