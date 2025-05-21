@@ -1156,6 +1156,33 @@ void bio_iov_bvec_set(struct bio *bio, const struct iov_iter *iter)
 	bio_set_flag(bio, BIO_CLONED);
 }
 
+static int bvec_try_merge_copy_src(struct bio *bio, struct bio_vec *src)
+{
+	struct bio_vec *bv;
+	sector_t end;
+
+	if (!bio->bi_vcnt)
+		return false;
+
+	bv = &bio->bi_io_vec[bio->bi_vcnt - 1];
+	end = bv->bv_sector + src->bv_sectors + 1;
+	if (end != src->bv_sector)
+		return false;
+
+	bv->bv_sectors += src->bv_sectors;
+	return true;
+}
+
+int bio_add_copy_src(struct bio *bio, struct bio_vec *src)
+{
+	if (bvec_try_merge_copy_src(bio, src))
+		return 0;
+	if (bio->bi_vcnt >= bio->bi_max_vecs)
+		return -EINVAL;
+	bio->bi_io_vec[bio->bi_vcnt++] = *src;
+	return 0;
+}
+
 static unsigned int get_contig_folio_len(unsigned int *num_pages,
 					 struct page **pages, unsigned int i,
 					 struct folio *folio, size_t left,
