@@ -275,6 +275,7 @@ void bio_init(struct bio *bio, struct block_device *bdev, struct bio_vec *table,
 	bio->bi_integrity = NULL;
 #endif
 	bio->bi_vcnt = 0;
+	bio->page_gaps = 0;
 
 	atomic_set(&bio->__bi_remaining, 1);
 	atomic_set(&bio->__bi_cnt, 1);
