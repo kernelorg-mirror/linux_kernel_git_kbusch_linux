@@ -619,9 +619,9 @@ static inline enum nvme_use_sgl nvme_pci_use_sgls(struct nvme_dev *dev,
 	struct nvme_queue *nvmeq = req->mq_hctx->driver_data;
 
 	if (nvmeq->qid && nvme_ctrl_sgl_supported(&dev->ctrl)) {
-		if (nvme_req(req)->flags & NVME_REQ_USERCMD)
-			return SGL_FORCED;
-		if (req->nr_integrity_segments > 1)
+		if (blk_rq_page_gaps(req) & (NVME_CTRL_PAGE_SIZE - 1) ||
+		    nvme_req(req)->flags & NVME_REQ_USERCMD ||
+		    req->nr_integrity_segments > 1)
 			return SGL_FORCED;
 		return SGL_SUPPORTED;
 	}
