@@ -152,6 +152,8 @@ struct request {
 	unsigned short nr_phys_segments;
 	unsigned short nr_integrity_segments;
 
+	unsigned int __page_gap;
+
 #ifdef CONFIG_BLK_INLINE_ENCRYPTION
 	struct bio_crypt_ctx *crypt_ctx;
 	struct blk_crypto_keyslot *crypt_keyslot;
@@ -1078,6 +1080,11 @@ struct req_iterator {
 static inline sector_t blk_rq_pos(const struct request *rq)
 {
 	return rq->__sector;
+}
+
+static inline unsigned int blk_rq_page_gaps(const struct request *rq)
+{
+	return rq->__page_gap;
 }
 
 static inline unsigned int blk_rq_bytes(const struct request *rq)

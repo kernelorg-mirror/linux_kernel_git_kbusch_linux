@@ -222,6 +222,7 @@ struct bio {
 	enum rw_hint		bi_write_hint;
 	u8			bi_write_stream;
 	blk_status_t		bi_status;
+	u8			page_gap_bit;
 	atomic_t		__bi_remaining;
 
 	struct bvec_iter	bi_iter;
